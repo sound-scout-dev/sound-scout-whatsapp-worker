@@ -13,10 +13,15 @@ const client = new Client({
     authStrategy: new LocalAuth({
         dataPath: './.wwebjs_auth'
     }),
-
+    // Pinning to a highly stable, older WhatsApp Web version
+    webVersionCache: {
+        type: 'remote',
+        remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html',
+    },
     puppeteer: {
         executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
         headless: true,
+        dumpio: true, // 🚨 CRITICAL: Forces Chromium to print internal browser errors to Render logs
         timeout: 60000,
         args: [
             '--no-sandbox',
