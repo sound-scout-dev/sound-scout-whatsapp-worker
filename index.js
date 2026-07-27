@@ -1,92 +1,75 @@
 require('dotenv').config();
 const express = require('express');
-const { Client, LocalAuth } = require('whatsapp-web.js');
-const qrcode = require('qrcode-terminal');
 const axios = require('axios');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
+const pino = require('pino');
+const qrcode = require('qrcode-terminal');
 
 const app = express();
 app.use(express.json());
 
 const WORKER_SECRET = process.env.WORKER_SECRET || 'super_secret_key';
+const PORT = process.env.PORT || 4000;
 
-const client = new Client({
-    authStrategy: new LocalAuth({
-        dataPath: './.wwebjs_auth'
-    }),
-    // Pinning to a highly stable, older WhatsApp Web version
-    webVersionCache: {
-        type: 'remote',
-        remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html',
-    },
-    puppeteer: {
-        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
-        headless: true,
-        dumpio: true, // 🚨 CRITICAL: Forces Chromium to print internal browser errors to Render logs
-        timeout: 60000,
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-accelerated-2d-canvas',
-            '--disable-gpu',
-            '--no-first-run',
-            '--no-zygote',
-            // 🚨 NEW: Stop Chromium from putting the heavy encryption task to sleep
-            '--disable-background-timer-throttling',
-            '--disable-backgrounding-occluded-windows',
-            '--disable-renderer-backgrounding',
-            // Spoofing the browser
-            '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
-        ]
+let sock;
 
-    }
-});
+async function connectToWhatsApp() {
+    const { state, saveCreds } = await useMultiFileAuthState('baileys_auth_info');
 
-// --- EVENT LISTENERS MUST BE REGISTERED BEFORE INITIALIZE ---
+    sock = makeWASocket({
+        auth: state,
+        // Suppress massive Baileys connection logs
+        logger: pino({ level: 'silent' }),
+        browser: ["SoundScout Worker", "Chrome", "1.0.0"]
+    });
 
-client.on('qr', (qr) => {
-    qrcode.generate(qr, { small: true });
-    console.log('⚡ Scan the QR Code above to link WhatsApp');
-});
+    sock.ev.on('creds.update', saveCreds);
 
-client.on('authenticated', () => {
-    console.log('🔑 WhatsApp Authenticated successfully!');
-});
-
-client.on('loading_screen', (percent, message) => {
-    console.log(`⏳ WhatsApp Syncing: ${percent}% - ${message}`);
-});
-
-client.on('ready', () => {
-    console.log('✅ WhatsApp Worker is LIVE and ready!');
-});
-
-client.on('auth_failure', (msg) => {
-    console.error('❌ Authentication Failure:', msg);
-});
-
-client.on('disconnected', (reason) => {
-    console.log('🔴 Client Disconnected:', reason);
-});
-
-// Incoming message handler
-client.on('message', async (msg) => {
-    if (msg.from === 'status@broadcast') return;
-
-    try {
-        if (process.env.AI_SERVICE_URL) {
-            const aiResponse = await axios.post(`${process.env.AI_SERVICE_URL}/api/support`, {
-                user_jid: msg.from,
-                message: msg.body
-            });
-            if (aiResponse.data && aiResponse.data.reply) {
-                client.sendMessage(msg.from, aiResponse.data.reply);
-            }
+    sock.ev.on('connection.update', (update) => {
+        const { connection, lastDisconnect, qr } = update;
+        
+        if (qr) {
+            console.log('⚡ Scan the QR Code above to link WhatsApp');
+            qrcode.generate(qr, { small: true });
         }
-    } catch (error) {
-        console.error('AI Proxy Error:', error.message);
-    }
-});
+
+        if (connection === 'close') {
+            const shouldReconnect = lastDisconnect.error?.output?.statusCode !== DisconnectReason.loggedOut;
+            console.log('🔴 Connection closed, reconnecting:', shouldReconnect);
+            if (shouldReconnect) {
+                connectToWhatsApp();
+            }
+        } else if (connection === 'open') {
+            console.log('✅ WhatsApp Worker is LIVE and ready!');
+        }
+    });
+
+    sock.ev.on('messages.upsert', async (m) => {
+        if (m.type !== 'notify') return;
+        const msg = m.messages[0];
+        if (!msg.message || msg.key.fromMe) return;
+
+        const from = msg.key.remoteJid;
+        if (from === 'status@broadcast') return;
+
+        const text = msg.message.conversation || msg.message.extendedTextMessage?.text;
+        if (!text) return;
+
+        try {
+            if (process.env.AI_SERVICE_URL) {
+                const aiResponse = await axios.post(`${process.env.AI_SERVICE_URL}/api/support`, {
+                    user_jid: from,
+                    message: text
+                });
+                if (aiResponse.data && aiResponse.data.reply) {
+                    await sock.sendMessage(from, { text: aiResponse.data.reply });
+                }
+            }
+        } catch (error) {
+            console.error('AI Proxy Error:', error.message);
+        }
+    });
+}
 
 // Express API Endpoint for Backend Dispatch
 app.post('/api/send-message', async (req, res) => {
@@ -96,12 +79,17 @@ app.post('/api/send-message', async (req, res) => {
         return res.status(403).json({ error: 'Unauthorized' });
     }
 
+    if (!sock) {
+        return res.status(500).json({ error: 'WhatsApp socket not initialized' });
+    }
+
     try {
         let jid = phone.replace(/\D/g, '');
         if (jid.startsWith('0')) jid = '94' + jid.substring(1);
-        jid = `${jid}@c.us`;
+        // Baileys uses s.whatsapp.net instead of c.us
+        jid = `${jid}@s.whatsapp.net`; 
 
-        await client.sendMessage(jid, message);
+        await sock.sendMessage(jid, { text: message });
         res.status(200).json({ success: true, message: 'Dispatched successfully' });
     } catch (error) {
         console.error('Send message error:', error.message);
@@ -109,10 +97,7 @@ app.post('/api/send-message', async (req, res) => {
     }
 });
 
-// START CLIENT AND SERVER
-const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
     console.log(`📡 Worker API listening on port ${PORT}`);
-    console.log('🔄 Initializing WhatsApp Client...');
-    client.initialize();
+    connectToWhatsApp();
 });
