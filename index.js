@@ -58,6 +58,7 @@ async function connectToWhatsApp() {
         try {
             if (process.env.AI_SERVICE_URL) {
                 const aiResponse = await axios.post(`${process.env.AI_SERVICE_URL}/api/support`, {
+                    session_id: from,
                     user_jid: from,
                     message: text
                 });
