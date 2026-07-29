@@ -73,6 +73,10 @@ async function connectToWhatsApp() {
 }
 
 // Express API Endpoint for Backend Dispatch
+app.get('/', (req, res) => {
+    res.status(200).send('WhatsApp Worker is running! 🚀');
+});
+
 app.post('/api/send-message', async (req, res) => {
     const { secret, phone, message } = req.body;
 
