@@ -12,6 +12,7 @@ const WORKER_SECRET = process.env.WORKER_SECRET || 'super_secret_key';
 const PORT = process.env.PORT || 4000;
 
 let sock;
+let isConnected = false;
 
 async function connectToWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState('baileys_auth_info');
@@ -29,7 +30,9 @@ async function connectToWhatsApp() {
         auth: state,
         version,
         logger: pino({ level: 'silent' }),
-        browser: ["SoundScout Worker", "Chrome", "1.0.0"]
+        browser: ["SoundScout Worker", "Chrome", "1.0.0"],
+        connectTimeoutMs: 60000,
+        keepAliveIntervalMs: 25000
     });
 
     sock.ev.on('creds.update', saveCreds);
@@ -43,13 +46,15 @@ async function connectToWhatsApp() {
         }
 
         if (connection === 'close') {
-            const statusCode = lastDisconnect.error?.output?.statusCode;
+            isConnected = false;
+            const statusCode = lastDisconnect?.error?.output?.statusCode;
             const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-            console.log(`🔴 Connection closed (status: ${statusCode}, error: ${lastDisconnect.error?.message || lastDisconnect.error}), reconnecting:`, shouldReconnect);
+            console.log(`🔴 Connection closed (status: ${statusCode}, error: ${lastDisconnect?.error?.message || lastDisconnect?.error}), reconnecting:`, shouldReconnect);
             if (shouldReconnect) {
-                connectToWhatsApp();
+                setTimeout(() => connectToWhatsApp(), 3000);
             }
         } else if (connection === 'open') {
+            isConnected = true;
             console.log('✅ WhatsApp Worker is LIVE and ready!');
         }
     });
@@ -82,9 +87,12 @@ async function connectToWhatsApp() {
     });
 }
 
-// Express API Endpoint for Backend Dispatch
+// Express API Endpoints
 app.get('/', (req, res) => {
-    res.status(200).send('WhatsApp Worker is running! 🚀');
+    res.status(200).json({ 
+        status: 'WhatsApp Worker is running! 🚀', 
+        connected: isConnected 
+    });
 });
 
 app.post('/api/send-message', async (req, res) => {
@@ -94,21 +102,24 @@ app.post('/api/send-message', async (req, res) => {
         return res.status(403).json({ error: 'Unauthorized' });
     }
 
-    if (!sock) {
-        return res.status(500).json({ error: 'WhatsApp socket not initialized' });
+    if (!sock || !isConnected) {
+        return res.status(503).json({ 
+            error: isConnected ? 'WhatsApp socket not initialized' : 'WhatsApp is not connected yet. Please wait or re-scan QR.' 
+        });
     }
 
     try {
         let jid = phone.replace(/\D/g, '');
         if (jid.startsWith('0')) jid = '94' + jid.substring(1);
-        // Baileys uses s.whatsapp.net instead of c.us
-        jid = `${jid}@s.whatsapp.net`; 
+        if (!jid.startsWith('94')) jid = '94' + jid;
+        jid = `${jid}@s.whatsapp.net`;
 
+        console.log(`📤 Sending WhatsApp message to ${jid}`);
         await sock.sendMessage(jid, { text: message });
         res.status(200).json({ success: true, message: 'Dispatched successfully' });
     } catch (error) {
         console.error('Send message error:', error.message);
-        res.status(500).json({ error: 'Failed to send message' });
+        res.status(500).json({ error: 'Failed to send message', details: error.message });
     }
 });
 
