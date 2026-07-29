@@ -1,7 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const qrcode = require('qrcode-terminal');
 
@@ -15,10 +15,19 @@ let sock;
 
 async function connectToWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState('baileys_auth_info');
+    
+    let version = [2, 3000, 1017578297]; // modern fallback version
+    try {
+        const latest = await fetchLatestBaileysVersion();
+        version = latest.version;
+        console.log(`Using WhatsApp Web Version: ${version.join('.')}`);
+    } catch (e) {
+        console.warn(`Failed to fetch latest Baileys version, using fallback: ${e.message}`);
+    }
 
     sock = makeWASocket({
         auth: state,
-        // Suppress massive Baileys connection logs
+        version,
         logger: pino({ level: 'silent' }),
         browser: ["SoundScout Worker", "Chrome", "1.0.0"]
     });
