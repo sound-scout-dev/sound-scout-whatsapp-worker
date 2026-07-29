@@ -4,3 +4,4 @@
 SingletonLock
 .env
 node_modules/
+baileys_auth_info/
