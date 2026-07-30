@@ -5,6 +5,27 @@ const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLat
 const pino = require('pino');
 const qrcode = require('qrcode-terminal');
 
+// Suppress verbose Baileys internal session/crypto logs
+const _origLog = console.log.bind(console);
+console.log = (...args) => {
+    const msg = args[0];
+    if (typeof msg === 'string' && (
+        msg.includes('Closing session') ||
+        msg.includes('_chains') ||
+        msg.includes('ephemeralKeyPair') ||
+        msg.includes('registrationId') ||
+        msg.includes('currentRatchet') ||
+        msg.includes('indexInfo') ||
+        msg.includes('baseKeyType') ||
+        msg.includes('remoteIdentityKey') ||
+        msg.includes('rootKey') ||
+        msg.includes('privKey') ||
+        msg.includes('pubKey') ||
+        msg.includes('previousCounter')
+    )) return;
+    _origLog(...args);
+};
+
 const app = express();
 app.use(express.json());
 
