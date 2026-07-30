@@ -10,6 +10,9 @@ app.use(express.json());
 
 const WORKER_SECRET = process.env.WORKER_SECRET || 'super_secret_key';
 const PORT = process.env.PORT || 4000;
+// AI service base URL – strip any trailing path like /api/generate
+const AI_BASE_URL = (process.env.AI_SERVICE_URL || 'https://sound-scout-ai.onrender.com')
+    .replace(/\/api\/.*$/, '').replace(/\/$/, '');
 
 let sock;
 let isConnected = false;
@@ -71,15 +74,14 @@ async function connectToWhatsApp() {
         if (!text) return;
 
         try {
-            if (process.env.AI_SERVICE_URL) {
-                const aiResponse = await axios.post(`${process.env.AI_SERVICE_URL}/api/support`, {
-                    session_id: from,
-                    user_jid: from,
-                    message: text
-                });
-                if (aiResponse.data && aiResponse.data.reply) {
-                    await sock.sendMessage(from, { text: aiResponse.data.reply });
-                }
+            const aiResponse = await axios.post(`${AI_BASE_URL}/api/support`, {
+                session_id: from,
+                user_jid: from,
+                message: text
+            });
+            if (aiResponse.data && aiResponse.data.reply) {
+                await sock.sendMessage(from, { text: aiResponse.data.reply });
+                console.log(`💬 Replied to ${from}`);
             }
         } catch (error) {
             console.error('AI Proxy Error:', error.message);
@@ -126,4 +128,17 @@ app.post('/api/send-message', async (req, res) => {
 app.listen(PORT, () => {
     console.log(`📡 Worker API listening on port ${PORT}`);
     connectToWhatsApp();
+
+    // Keep-alive: ping ourselves and the AI service every 10 min to
+    // prevent Render free-tier from spinning either service down
+    const WORKER_URL = process.env.RENDER_EXTERNAL_URL || '';
+    setInterval(async () => {
+        try {
+            if (WORKER_URL) await axios.get(WORKER_URL + '/');
+            await axios.get(AI_BASE_URL + '/');
+            console.log('🔄 Keep-alive pings sent to worker + AI service');
+        } catch (e) {
+            console.warn('⚠️  Keep-alive ping failed:', e.message);
+        }
+    }, 600000); // every 10 minutes
 });
