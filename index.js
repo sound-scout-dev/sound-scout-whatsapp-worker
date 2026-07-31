@@ -132,9 +132,9 @@ app.post('/api/send-message', async (req, res) => {
     }
 
     try {
-        let jid = phone.replace(/\D/g, '');
+        let jid = String(phone || '').replace(/\D/g, '');
         if (jid.startsWith('0')) jid = '94' + jid.substring(1);
-        if (!jid.startsWith('94')) jid = '94' + jid;
+        else if (jid.length === 9 && jid.startsWith('7')) jid = '94' + jid;
         jid = `${jid}@s.whatsapp.net`;
 
         console.log(`📤 Sending WhatsApp message to ${jid}`);
