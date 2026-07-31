@@ -222,10 +222,12 @@ async function connectToWhatsApp() {
 
 // ── Express API Endpoints ──────────────────────────────────────────────────────
 app.get('/', (req, res) => {
+    const botPhone = sock?.user?.id ? sock.user.id.split(':')[0].replace(/\D/g, '') : null;
     res.status(200).json({ 
         status: 'WhatsApp Worker is running! 🚀', 
         connected: isConnected,
         socketReady: isSocketReady(),
+        botPhone: botPhone,
         queueLength: messageQueue.length,
         pendingOTPs: Object.keys(pendingOTPs).length
     });
