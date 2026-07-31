@@ -176,10 +176,11 @@ async function connectToWhatsApp() {
                     return;
                 }
             } catch (err) {
-                console.error(`❌ Verification error for code ${extractedCode}:`, err.response?.data || err.message);
+                const errMsg = err.response?.data?.message || "Invalid or expired code. Please send the code from your registered WhatsApp number.";
+                console.error(`❌ Verification error for code ${extractedCode}:`, errMsg);
                 await sendWhatsAppMessage(
                     from,
-                    "❌ *Verification Failed.* Invalid or expired code. Please try registering again on the website."
+                    `❌ *Verification Failed.*\n\n${errMsg}`
                 );
                 return;
             }
