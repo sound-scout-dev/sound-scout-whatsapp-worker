@@ -5,7 +5,7 @@ const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLat
 const pino = require('pino');
 const qrcode = require('qrcode-terminal');
 
-// Suppress verbose Baileys internal session/crypto logs
+// ── Suppress verbose Baileys internal session/crypto logs ──────────────────────
 const _origLog = console.log.bind(console);
 console.log = (...args) => {
     const msg = args[0];
@@ -31,17 +31,55 @@ app.use(express.json());
 
 const WORKER_SECRET = process.env.WORKER_SECRET || 'super_secret_key';
 const PORT = process.env.PORT || 4000;
-// AI service base URL – strip any trailing path like /api/generate
 const AI_BASE_URL = (process.env.AI_SERVICE_URL || 'https://sound-scout-ai.onrender.com')
     .replace(/\/api\/.*$/, '').replace(/\/$/, '');
 
 let sock;
 let isConnected = false;
 
+// ── Message Queue: hold outbound messages while socket is not stable ───────────
+const messageQueue = [];
+let connectionStableAt = 0; // timestamp when connection became stable
+const STABILITY_DELAY_MS = 4000; // wait 4s after open before sending
+
+function isSocketReady() {
+    return isConnected && sock && (Date.now() - connectionStableAt >= STABILITY_DELAY_MS);
+}
+
+async function flushMessageQueue() {
+    if (!isSocketReady() || messageQueue.length === 0) return;
+    console.log(`📬 Flushing ${messageQueue.length} queued message(s)...`);
+    while (messageQueue.length > 0) {
+        const { jid, message, resolve, reject } = messageQueue.shift();
+        try {
+            await sock.sendMessage(jid, { text: message });
+            console.log(`✅ Queued message delivered to ${jid}`);
+            resolve({ success: true });
+        } catch (err) {
+            console.error(`❌ Failed to deliver queued message to ${jid}:`, err.message);
+            reject(err);
+        }
+    }
+}
+
+async function sendWhatsAppMessage(jid, message) {
+    if (!isSocketReady()) {
+        // Queue the message and wait for delivery
+        console.log(`⏳ Socket not ready — queuing message for ${jid}`);
+        return new Promise((resolve, reject) => {
+            messageQueue.push({ jid, message, resolve, reject });
+            // Timeout after 30s
+            setTimeout(() => reject(new Error('Message queued but socket never became ready within 30s')), 30000);
+        });
+    }
+    await sock.sendMessage(jid, { text: message });
+    console.log(`✅ Message delivered to ${jid}`);
+}
+
 async function connectToWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState('baileys_auth_info');
     
-    let version = [2, 3000, 1017578297]; // modern fallback version
+    let version = [2, 3000, 1017578297];
     try {
         const latest = await fetchLatestBaileysVersion();
         version = latest.version;
@@ -71,6 +109,7 @@ async function connectToWhatsApp() {
 
         if (connection === 'close') {
             isConnected = false;
+            connectionStableAt = 0;
             const statusCode = lastDisconnect?.error?.output?.statusCode;
             const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
             console.log(`🔴 Connection closed (status: ${statusCode}, error: ${lastDisconnect?.error?.message || lastDisconnect?.error}), reconnecting:`, shouldReconnect);
@@ -79,7 +118,10 @@ async function connectToWhatsApp() {
             }
         } else if (connection === 'open') {
             isConnected = true;
-            console.log('✅ WhatsApp Worker is LIVE and ready!');
+            connectionStableAt = Date.now();
+            console.log(`✅ WhatsApp Worker is LIVE and ready! Waiting ${STABILITY_DELAY_MS / 1000}s for connection to stabilise...`);
+            // Flush any queued messages after stability delay
+            setTimeout(flushMessageQueue, STABILITY_DELAY_MS);
         }
     });
 
@@ -101,7 +143,7 @@ async function connectToWhatsApp() {
                 message: text
             });
             if (aiResponse.data && aiResponse.data.reply) {
-                await sock.sendMessage(from, { text: aiResponse.data.reply });
+                await sendWhatsAppMessage(from, aiResponse.data.reply);
                 console.log(`💬 Replied to ${from}`);
             }
         } catch (error) {
@@ -110,11 +152,13 @@ async function connectToWhatsApp() {
     });
 }
 
-// Express API Endpoints
+// ── Express API Endpoints ──────────────────────────────────────────────────────
 app.get('/', (req, res) => {
     res.status(200).json({ 
         status: 'WhatsApp Worker is running! 🚀', 
-        connected: isConnected 
+        connected: isConnected,
+        socketReady: isSocketReady(),
+        queueLength: messageQueue.length
     });
 });
 
@@ -125,10 +169,12 @@ app.post('/api/send-message', async (req, res) => {
         return res.status(403).json({ error: 'Unauthorized' });
     }
 
-    if (!sock || !isConnected) {
-        return res.status(503).json({ 
-            error: isConnected ? 'WhatsApp socket not initialized' : 'WhatsApp is not connected yet. Please wait or re-scan QR.' 
-        });
+    if (!sock) {
+        return res.status(503).json({ error: 'WhatsApp socket not initialized. Please restart the worker.' });
+    }
+
+    if (!isConnected) {
+        return res.status(503).json({ error: 'WhatsApp is not connected yet. Please wait or re-scan QR.' });
     }
 
     try {
@@ -137,11 +183,11 @@ app.post('/api/send-message', async (req, res) => {
         else if (jid.length === 9 && jid.startsWith('7')) jid = '94' + jid;
         jid = `${jid}@s.whatsapp.net`;
 
-        console.log(`📤 Sending WhatsApp message to ${jid}`);
-        await sock.sendMessage(jid, { text: message });
+        console.log(`📤 Sending WhatsApp message to ${jid} (socketReady=${isSocketReady()}, queueSize=${messageQueue.length})`);
+        await sendWhatsAppMessage(jid, message);
         res.status(200).json({ success: true, message: 'Dispatched successfully' });
     } catch (error) {
-        console.error('Send message error:', error.message);
+        console.error(`❌ Send message error to ${phone}:`, error.message);
         res.status(500).json({ error: 'Failed to send message', details: error.message });
     }
 });
@@ -150,8 +196,7 @@ app.listen(PORT, () => {
     console.log(`📡 Worker API listening on port ${PORT}`);
     connectToWhatsApp();
 
-    // Keep-alive: ping ourselves and the AI service every 10 min to
-    // prevent Render free-tier from spinning either service down
+    // Keep-alive: ping ourselves and the AI service every 10 min
     const WORKER_URL = process.env.RENDER_EXTERNAL_URL || '';
     setInterval(async () => {
         try {
@@ -161,5 +206,5 @@ app.listen(PORT, () => {
         } catch (e) {
             console.warn('⚠️  Keep-alive ping failed:', e.message);
         }
-    }, 600000); // every 10 minutes
+    }, 600000);
 });
