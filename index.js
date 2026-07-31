@@ -146,6 +146,33 @@ async function connectToWhatsApp() {
         const text = (msg.message.conversation || msg.message.extendedTextMessage?.text || '').trim();
         if (!text) return;
 
+        const senderPhone = from.replace('@s.whatsapp.net', '').replace('@c.us', '');
+
+        // ── Click-to-Verify handler: detect VERIFY-XXXXXX codes sent by user ──
+        const verifyMatch = text.match(/VERIFY-[A-Z0-9]{6}/i);
+        if (verifyMatch) {
+            const vCode = verifyMatch[0].toUpperCase();
+            console.log(`🔐 Click-to-Verify code ${vCode} received from ${senderPhone}`);
+            
+            const backendUrl = (process.env.BACKEND_SERVICE_URL || 'https://sound-scout-backend.onrender.com').replace(/\/$/, '');
+            try {
+                const vRes = await axios.post(`${backendUrl}/api/users/verify-code`, {
+                    secret: WORKER_SECRET,
+                    code: vCode,
+                    phone: senderPhone
+                });
+
+                if (vRes.data && vRes.data.success) {
+                    await sendWhatsAppMessage(from, '🎉 *Verification Successful!*\n\nYour SoundScout account has been verified. You may now return to the app.');
+                    return;
+                }
+            } catch (err) {
+                console.error(`❌ Verification code processing error for ${vCode}:`, err.response?.data || err.message);
+                await sendWhatsAppMessage(from, '❌ *Verification Failed*\n\nThe verification code is invalid or has expired.');
+                return;
+            }
+        }
+
         // ── Pending OTP delivery: if this number has a queued OTP, send it now ──
         const senderPhone = from.replace('@s.whatsapp.net', '').replace('@c.us', '');
         const pending = pendingOTPs[senderPhone];
