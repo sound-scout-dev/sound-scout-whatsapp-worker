@@ -186,7 +186,6 @@ async function connectToWhatsApp() {
         }
 
         // ── Pending OTP delivery: if this number has a queued OTP, send it now ──
-        const senderPhone = from.replace('@s.whatsapp.net', '').replace('@c.us', '');
         const pending = pendingOTPs[senderPhone];
         if (pending) {
             if (Date.now() < pending.expiresAt) {
