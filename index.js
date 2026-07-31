@@ -150,10 +150,10 @@ async function connectToWhatsApp() {
 
         const senderPhone = from.split('@')[0].split(':')[0].replace(/\D/g, '');
 
-        // ── Click-to-Verify handler: process VERIFY- codes sent by user ───────
-        if (cleanText.startsWith('VERIFY-')) {
+        // ── Click-to-Verify handler: process VERIFY- and RESET- codes sent by user ───────
+        if (cleanText.startsWith('VERIFY-') || cleanText.startsWith('RESET-')) {
             const extractedCode = cleanText.split(/\s+/)[0];
-            console.log(`🔐 Verification code ${extractedCode} received from ${senderPhone} (raw: ${msg.key.remoteJid})`);
+            console.log(`🔐 Verification/Reset code ${extractedCode} received from ${senderPhone} (raw: ${msg.key.remoteJid})`);
 
             try {
                 const response = await axios.post(`${MAIN_BACKEND_URL}/api/users/verify-code`, {
@@ -163,10 +163,11 @@ async function connectToWhatsApp() {
                 });
 
                 if (response.data && response.data.success) {
-                    await sendWhatsAppMessage(
-                        from,
-                        "✅ *Account Verified!* Your SoundScout account is now fully activated. You can return to your browser to log in."
-                    );
+                    const isReset = extractedCode.startsWith('RESET-');
+                    const successMsg = isReset
+                        ? "✅ *Code Confirmed!* Your identity has been verified via WhatsApp. You can return to your browser to set your new password."
+                        : "✅ *Account Verified!* Your SoundScout account is now fully activated. You can return to your browser to log in.";
+                    await sendWhatsAppMessage(from, successMsg);
                     return;
                 } else {
                     await sendWhatsAppMessage(
