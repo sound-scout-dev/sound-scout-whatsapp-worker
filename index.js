@@ -148,18 +148,18 @@ async function connectToWhatsApp() {
         const cleanText = rawText.trim().toUpperCase();
         if (!cleanText) return;
 
-        const senderPhone = from.replace('@s.whatsapp.net', '').replace('@c.us', '');
+        const senderPhone = from.split('@')[0].split(':')[0].replace(/\D/g, '');
 
         // ── Click-to-Verify handler: process VERIFY- codes sent by user ───────
         if (cleanText.startsWith('VERIFY-')) {
             const extractedCode = cleanText.split(/\s+/)[0];
-            console.log(`🔐 Verification code ${extractedCode} received from ${msg.key.remoteJid}`);
+            console.log(`🔐 Verification code ${extractedCode} received from ${senderPhone} (raw: ${msg.key.remoteJid})`);
 
             try {
                 const response = await axios.post(`${MAIN_BACKEND_URL}/api/users/verify-code`, {
                     secret: WORKER_SECRET,
                     code: extractedCode,
-                    phone: msg.key.remoteJid
+                    phone: senderPhone
                 });
 
                 if (response.data && response.data.success) {
@@ -176,10 +176,11 @@ async function connectToWhatsApp() {
                     return;
                 }
             } catch (err) {
-                console.error(`❌ Verification error for code ${extractedCode}:`, err.response?.data || err.message);
+                const errMsg = err.response?.data?.message || "Invalid or expired code. Please send the code from your registered WhatsApp number.";
+                console.error(`❌ Verification error for code ${extractedCode}:`, errMsg);
                 await sendWhatsAppMessage(
                     from,
-                    "❌ *Verification Failed.* Invalid or expired code. Please try registering again on the website."
+                    `❌ *Verification Failed.*\n\n${errMsg}`
                 );
                 return;
             }
