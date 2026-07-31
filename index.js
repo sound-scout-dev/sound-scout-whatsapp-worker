@@ -30,6 +30,7 @@ const app = express();
 app.use(express.json());
 
 const WORKER_SECRET = process.env.WORKER_SECRET || 'super_secret_key';
+const MAIN_BACKEND_URL = (process.env.MAIN_BACKEND_URL || process.env.BACKEND_SERVICE_URL || 'https://sound-scout-backend.onrender.com').replace(/\/$/, '');
 const PORT = process.env.PORT || 4000;
 const AI_BASE_URL = (process.env.AI_SERVICE_URL || 'https://sound-scout-ai.onrender.com')
     .replace(/\/api\/.*$/, '').replace(/\/$/, '');
@@ -143,32 +144,43 @@ async function connectToWhatsApp() {
         const from = msg.key.remoteJid;
         if (from === 'status@broadcast') return;
 
-        const text = (msg.message.conversation || msg.message.extendedTextMessage?.text || '').trim();
-        if (!text) return;
+        const rawText = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
+        const cleanText = rawText.trim().toUpperCase();
+        if (!cleanText) return;
 
         const senderPhone = from.replace('@s.whatsapp.net', '').replace('@c.us', '');
 
-        // ── Click-to-Verify handler: detect VERIFY-XXXXXX codes sent by user ──
-        const verifyMatch = text.match(/VERIFY-[A-Z0-9]{6}/i);
-        if (verifyMatch) {
-            const vCode = verifyMatch[0].toUpperCase();
-            console.log(`🔐 Click-to-Verify code ${vCode} received from ${senderPhone}`);
-            
-            const backendUrl = (process.env.BACKEND_SERVICE_URL || 'https://sound-scout-backend.onrender.com').replace(/\/$/, '');
+        // ── Click-to-Verify handler: process VERIFY- codes sent by user ───────
+        if (cleanText.startsWith('VERIFY-')) {
+            const extractedCode = cleanText.split(/\s+/)[0];
+            console.log(`🔐 Verification code ${extractedCode} received from ${msg.key.remoteJid}`);
+
             try {
-                const vRes = await axios.post(`${backendUrl}/api/users/verify-code`, {
+                const response = await axios.post(`${MAIN_BACKEND_URL}/api/users/verify-code`, {
                     secret: WORKER_SECRET,
-                    code: vCode,
-                    phone: senderPhone
+                    code: extractedCode,
+                    phone: msg.key.remoteJid
                 });
 
-                if (vRes.data && vRes.data.success) {
-                    await sendWhatsAppMessage(from, '🎉 *Verification Successful!*\n\nYour SoundScout account has been verified. You may now return to the app.');
+                if (response.data && response.data.success) {
+                    await sendWhatsAppMessage(
+                        from,
+                        "✅ *Account Verified!* Your SoundScout account is now fully activated. You can return to your browser to log in."
+                    );
+                    return;
+                } else {
+                    await sendWhatsAppMessage(
+                        from,
+                        "❌ *Verification Failed.* Invalid or expired code. Please try registering again on the website."
+                    );
                     return;
                 }
             } catch (err) {
-                console.error(`❌ Verification code processing error for ${vCode}:`, err.response?.data || err.message);
-                await sendWhatsAppMessage(from, '❌ *Verification Failed*\n\nThe verification code is invalid or has expired.');
+                console.error(`❌ Verification error for code ${extractedCode}:`, err.response?.data || err.message);
+                await sendWhatsAppMessage(
+                    from,
+                    "❌ *Verification Failed.* Invalid or expired code. Please try registering again on the website."
+                );
                 return;
             }
         }
