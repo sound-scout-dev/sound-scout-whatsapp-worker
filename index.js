@@ -39,8 +39,21 @@ let isConnected = false;
 
 // ── Message Queue: hold outbound messages while socket is not stable ───────────
 const messageQueue = [];
-let connectionStableAt = 0; // timestamp when connection became stable
-const STABILITY_DELAY_MS = 4000; // wait 4s after open before sending
+let connectionStableAt = 0;
+const STABILITY_DELAY_MS = 4000;
+
+// ── Pending OTP Store: keyed by normalised phone number ────────────────────────
+// When a user hasn't messaged before, we store their OTP here.
+// The moment they send any message to the linked number, we deliver it.
+// TTL: 10 minutes.
+const pendingOTPs = {}; // { '94762567546': { message: '...', expiresAt: Date } }
+
+function normPhone(phone) {
+    let n = String(phone || '').replace(/\D/g, '');
+    if (n.startsWith('0')) n = '94' + n.substring(1);
+    else if (n.length === 9 && n.startsWith('7')) n = '94' + n;
+    return n;
+}
 
 function isSocketReady() {
     return isConnected && sock && (Date.now() - connectionStableAt >= STABILITY_DELAY_MS);
@@ -64,12 +77,10 @@ async function flushMessageQueue() {
 
 async function sendWhatsAppMessage(jid, message) {
     if (!isSocketReady()) {
-        // Queue the message and wait for delivery
         console.log(`⏳ Socket not ready — queuing message for ${jid}`);
         return new Promise((resolve, reject) => {
             messageQueue.push({ jid, message, resolve, reject });
-            // Timeout after 30s
-            setTimeout(() => reject(new Error('Message queued but socket never became ready within 30s')), 30000);
+            setTimeout(() => reject(new Error('Socket never became ready within 30s')), 30000);
         });
     }
     await sock.sendMessage(jid, { text: message });
@@ -120,7 +131,6 @@ async function connectToWhatsApp() {
             isConnected = true;
             connectionStableAt = Date.now();
             console.log(`✅ WhatsApp Worker is LIVE and ready! Waiting ${STABILITY_DELAY_MS / 1000}s for connection to stabilise...`);
-            // Flush any queued messages after stability delay
             setTimeout(flushMessageQueue, STABILITY_DELAY_MS);
         }
     });
@@ -133,9 +143,29 @@ async function connectToWhatsApp() {
         const from = msg.key.remoteJid;
         if (from === 'status@broadcast') return;
 
-        const text = msg.message.conversation || msg.message.extendedTextMessage?.text;
+        const text = (msg.message.conversation || msg.message.extendedTextMessage?.text || '').trim();
         if (!text) return;
 
+        // ── Pending OTP delivery: if this number has a queued OTP, send it now ──
+        const senderPhone = from.replace('@s.whatsapp.net', '').replace('@c.us', '');
+        const pending = pendingOTPs[senderPhone];
+        if (pending) {
+            if (Date.now() < pending.expiresAt) {
+                console.log(`📨 User ${senderPhone} messaged first — delivering queued OTP now`);
+                try {
+                    await sendWhatsAppMessage(from, pending.message);
+                    delete pendingOTPs[senderPhone];
+                } catch (err) {
+                    console.error(`❌ Failed to deliver pending OTP to ${from}:`, err.message);
+                }
+                return; // Don't forward to AI support for this first message
+            } else {
+                console.log(`⏰ Pending OTP for ${senderPhone} has expired — discarding`);
+                delete pendingOTPs[senderPhone];
+            }
+        }
+
+        // ── Forward to AI support agent ────────────────────────────────────────
         try {
             const aiResponse = await axios.post(`${AI_BASE_URL}/api/support`, {
                 session_id: from,
@@ -158,10 +188,12 @@ app.get('/', (req, res) => {
         status: 'WhatsApp Worker is running! 🚀', 
         connected: isConnected,
         socketReady: isSocketReady(),
-        queueLength: messageQueue.length
+        queueLength: messageQueue.length,
+        pendingOTPs: Object.keys(pendingOTPs).length
     });
 });
 
+// POST /api/send-message — direct send (for non-first-time users)
 app.post('/api/send-message', async (req, res) => {
     const { secret, phone, message } = req.body;
 
@@ -170,18 +202,15 @@ app.post('/api/send-message', async (req, res) => {
     }
 
     if (!sock) {
-        return res.status(503).json({ error: 'WhatsApp socket not initialized. Please restart the worker.' });
+        return res.status(503).json({ error: 'WhatsApp socket not initialized.' });
     }
-
     if (!isConnected) {
-        return res.status(503).json({ error: 'WhatsApp is not connected yet. Please wait or re-scan QR.' });
+        return res.status(503).json({ error: 'WhatsApp is not connected. Please wait or re-scan QR.' });
     }
 
     try {
-        let jid = String(phone || '').replace(/\D/g, '');
-        if (jid.startsWith('0')) jid = '94' + jid.substring(1);
-        else if (jid.length === 9 && jid.startsWith('7')) jid = '94' + jid;
-        jid = `${jid}@s.whatsapp.net`;
+        const normalised = normPhone(phone);
+        const jid = `${normalised}@s.whatsapp.net`;
 
         console.log(`📤 Sending WhatsApp message to ${jid} (socketReady=${isSocketReady()}, queueSize=${messageQueue.length})`);
         await sendWhatsAppMessage(jid, message);
@@ -192,11 +221,31 @@ app.post('/api/send-message', async (req, res) => {
     }
 });
 
+// POST /api/queue-otp — store OTP for first-time users who haven't messaged before.
+// The OTP will be delivered the moment they send any message to the linked number.
+app.post('/api/queue-otp', async (req, res) => {
+    const { secret, phone, message } = req.body;
+
+    if (secret !== WORKER_SECRET) {
+        return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    const normalised = normPhone(phone);
+    pendingOTPs[normalised] = {
+        message,
+        expiresAt: Date.now() + 10 * 60 * 1000 // 10 minutes TTL
+    };
+    console.log(`📋 OTP queued for first-time user ${normalised} (expires in 10min)`);
+    res.status(200).json({ 
+        success: true, 
+        instruction: `Ask the user to send any message to your WhatsApp number. Their OTP will be auto-delivered.`
+    });
+});
+
 app.listen(PORT, () => {
     console.log(`📡 Worker API listening on port ${PORT}`);
     connectToWhatsApp();
 
-    // Keep-alive: ping ourselves and the AI service every 10 min
     const WORKER_URL = process.env.RENDER_EXTERNAL_URL || '';
     setInterval(async () => {
         try {
