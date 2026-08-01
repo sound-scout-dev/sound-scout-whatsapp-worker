@@ -233,7 +233,16 @@ async function connectToWhatsApp() {
 
 // ── Express API Endpoints ──────────────────────────────────────────────────────
 app.get('/', (req, res) => {
-    const botPhone = sock?.user?.id ? sock.user.id.split(':')[0].replace(/\D/g, '') : null;
+    let botPhone = null;
+    if (sock?.user?.id) {
+        const rawId = sock.user.id.split(':')[0].split('@')[0].replace(/\D/g, '');
+        // Standard phone numbers are 9-12 digits. LIDs are 15-digit internal IDs.
+        if (rawId.length >= 9 && rawId.length <= 13 && !rawId.startsWith('63415')) {
+            botPhone = rawId;
+        }
+    }
+    if (!botPhone) botPhone = '94703252870';
+
     res.status(200).json({ 
         status: 'WhatsApp Worker is running! 🚀', 
         connected: isConnected,
