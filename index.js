@@ -231,17 +231,26 @@ async function connectToWhatsApp() {
     });
 }
 
+function extractValidPhone(raw) {
+    if (!raw) return '94703252870';
+    const str = String(raw);
+    if (str.includes('@lid') || str.replace(/\D/g, '').length >= 14) {
+        return '94703252870';
+    }
+    let digits = str.split(':')[0].split('@')[0].replace(/\D/g, '');
+    if (digits.startsWith('0')) digits = '94' + digits.substring(1);
+    else if (digits.length === 9 && digits.startsWith('7')) digits = '94' + digits;
+    
+    if (digits.length >= 9 && digits.length <= 13) {
+        return digits;
+    }
+    return '94703252870';
+}
+
 // ── Express API Endpoints ──────────────────────────────────────────────────────
 app.get('/', (req, res) => {
-    let botPhone = null;
-    if (sock?.user?.id) {
-        const rawId = sock.user.id.split(':')[0].split('@')[0].replace(/\D/g, '');
-        // Standard phone numbers are 9-12 digits. LIDs are 15-digit internal IDs.
-        if (rawId.length >= 9 && rawId.length <= 13 && !rawId.startsWith('63415')) {
-            botPhone = rawId;
-        }
-    }
-    if (!botPhone) botPhone = '94703252870';
+    const rawBotId = sock?.user?.id || null;
+    const botPhone = extractValidPhone(rawBotId);
 
     res.status(200).json({ 
         status: 'WhatsApp Worker is running! 🚀', 
