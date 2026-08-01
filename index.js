@@ -219,7 +219,7 @@ async function connectToWhatsApp() {
             const aiResponse = await axios.post(`${AI_BASE_URL}/api/support`, {
                 session_id: from,
                 user_jid: from,
-                message: text
+                message: rawText
             });
             if (aiResponse.data && aiResponse.data.reply) {
                 await sendWhatsAppMessage(from, aiResponse.data.reply);
