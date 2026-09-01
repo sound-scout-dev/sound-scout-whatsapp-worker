@@ -241,25 +241,34 @@ async function connectToWhatsApp() {
 }
 
 function extractValidPhone(raw) {
-    if (!raw) return '94703252870';
+    if (!raw) return '';
     const str = String(raw);
     if (str.includes('@lid') || str.replace(/\D/g, '').length >= 14) {
-        return '94703252870';
+        // Caller should have passed the real phone-number JID (sock.user.phoneNumber) instead of
+        // sock.user.id here -- a LID (Linked ID) can't be turned into a phone number by parsing.
+        return '';
     }
     let digits = str.split(':')[0].split('@')[0].replace(/\D/g, '');
     if (digits.startsWith('0')) digits = '94' + digits.substring(1);
     else if (digits.length === 9 && digits.startsWith('7')) digits = '94' + digits;
-    
+
     if (digits.length >= 9 && digits.length <= 13) {
         return digits;
     }
-    return '94703252870';
+    return '';
 }
 
 // ── Express API Endpoints ──────────────────────────────────────────────────────
 app.get('/', (req, res) => {
-    const rawBotId = sock?.user?.id || null;
-    const botPhone = extractValidPhone(rawBotId);
+    // sock.user.id is "preferred" as LID when WhatsApp addresses this device by LID (Linked ID)
+    // rather than phone number -- phoneNumber is Baileys' explicit real-phone-number field, and
+    // is what we actually need here (this is the number shown to users for the "message the bot"
+    // deep link). Fall back to .id only when phoneNumber isn't populated yet.
+    const rawBotId = sock?.user?.phoneNumber || sock?.user?.id || null;
+    // Known-correct number as a last resort if the socket's own identity can't be resolved yet
+    // (e.g. briefly after a fresh reconnect) -- purely informational (the "message us" deep link
+    // shown to users), not a security check, so a static fallback is fine here.
+    const botPhone = extractValidPhone(rawBotId) || '94784475700';
 
     res.status(200).json({ 
         status: 'WhatsApp Worker is running! 🚀', 
