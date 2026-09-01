@@ -157,7 +157,16 @@ async function connectToWhatsApp() {
         const cleanText = rawText.trim().toUpperCase();
         if (!cleanText) return;
 
-        const senderPhone = from.split('@')[0].split(':')[0].replace(/\D/g, '');
+        // WhatsApp sometimes addresses a contact by LID (Linked ID, an opaque internal
+        // identifier) instead of their phone number -- remoteJid is then e.g.
+        // "123456789012345@lid" instead of "94771234567@s.whatsapp.net". Baileys pairs the
+        // two addressing modes on the message key as remoteJidAlt, so resolve back to the
+        // real phone-number JID whenever we can; the backend's phone-match check for
+        // Click-to-Verify codes depends on this being the actual registered number, not an
+        // opaque LID that can't be compared against anything.
+        const isLidAddress = from.endsWith('@lid');
+        const phoneJid = (isLidAddress && msg.key.remoteJidAlt) ? msg.key.remoteJidAlt : from;
+        const senderPhone = phoneJid.split('@')[0].split(':')[0].replace(/\D/g, '');
 
         // ── Click-to-Verify handler: process VERIFY- and RESET- codes sent by user ───────
         if (cleanText.startsWith('VERIFY-') || cleanText.startsWith('RESET-')) {
